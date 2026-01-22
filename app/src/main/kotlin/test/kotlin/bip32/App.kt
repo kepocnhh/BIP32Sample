@@ -71,7 +71,8 @@ fun main() {
     val fingerprint = 0
     val childNumber = 0
     val sha256 = MessageDigest.getInstance("sha256")
-    val pk = ByteArrayOutputStream().use { stream ->
+    // Extended public and private keys are serialized as follows:
+    val epk = ByteArrayOutputStream().use { stream ->
         // 4 bytes: version bytes (mainnet: 0x0488B21E public, 0x0488ADE4 private; testnet: 0x043587CF public, 0x04358394 private)
         stream.writeBytes(prtver)
 
@@ -90,20 +91,22 @@ fun main() {
         // 33 bytes: the public key or private key data (serP(K) for public keys, 0x00 || ser256(k) for private keys)
         stream.write(0)
         stream.writeBytes(IL)
-
-        // This 78 byte structure can be encoded like other Bitcoin data in Base58,
-        // by first adding 32 checksum bits (derived from the double SHA-256 checksum),
-        // and then converting to the Base58 representation.
-        sha256.update(stream.toByteArray())
-        sha256.update(sha256.digest())
-        stream.write(sha256.digest(), 0, 4)
         stream.toByteArray()
     }
+
+    // This 78 byte structure can be encoded like other Bitcoin data in Base58,
+    // by first adding 32 checksum bits (derived from the double SHA-256 checksum),
+    // and then converting to the Base58 representation.
+    sha256.update(epk)
+    sha256.update(sha256.digest())
+    val hash = sha256.digest()
     val message = """
         key(${key.encoded.size}): ${key.encoded.hex()}
         IL: ${IL.hex()}
         IR: ${IR.hex()}
-        pk(${pk.size}): ${pk.hex()}
+        epk(${epk.size}): ${epk.hex()}
+        epk:sha256:sha256: ${hash.hex()}
+        epk:checksum: ${hash.copyOf(4).hex()}
     """.trimIndent()
     println(message)
 }
