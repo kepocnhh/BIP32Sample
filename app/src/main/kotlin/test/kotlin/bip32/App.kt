@@ -1,6 +1,7 @@
 package test.kotlin.bip32
 
 import java.io.ByteArrayOutputStream
+import java.math.BigInteger
 import java.security.Key
 import java.security.MessageDigest
 import java.security.spec.KeySpec
@@ -10,6 +11,8 @@ import javax.crypto.Mac
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
+import org.bouncycastle.jce.ECNamedCurveTable
+import org.bouncycastle.jce.spec.ECParameterSpec
 import sp.kx.bytes.writeBytes
 
 private fun Int.hex(locale: Locale = Locale.US): String {
@@ -50,21 +53,28 @@ private fun getSeed(mnemonic: String, passphrase: String): ByteArray {
     return seed
 }
 
-fun main() {
-    val mnemonic = "foo"
-    val passphrase = "bar"
-    val seed = getSeed(mnemonic = mnemonic, passphrase = passphrase)
-    val mk = MasterKey.from(seed = seed)
-    val pubver = 0x0488b21e
-    val prtver = 0x0488ade4
-    val depth = 0
-    val fingerprint = 0
-    val childNumber = 0
-    val sha256 = MessageDigest.getInstance("sha256")
-    // Extended public and private keys are serialized as follows:
-    val epk = ByteArrayOutputStream().use { stream ->
-        // 4 bytes: version bytes (mainnet: 0x0488B21E public, 0x0488ADE4 private; testnet: 0x043587CF public, 0x04358394 private)
-        stream.writeBytes(prtver)
+private fun getMasterKey(seed: ByteArray): ByteArray {
+    // Calculate I = HMAC-SHA512(Key = "Bitcoin seed", Data = S)
+    val mac = Mac.getInstance("hmacsha512")
+    val encoded = "Bitcoin seed".toByteArray(charset = Charsets.UTF_8)
+    val key: Key = SecretKeySpec(encoded, mac.algorithm)
+    mac.init(key)
+    val I = mac.doFinal(seed)
+    check(I.size == 64)
+    return I
+}
+
+private fun getExtendedKey(
+    version: Int,
+    depth: Int,
+    fingerprint: Int,
+    childNumber: Int,
+    chainCode: ByteArray,
+    encoded: ByteArray,
+): ByteArray {
+    return ByteArrayOutputStream().use { stream ->
+        // 4 bytes: version bytes (mainnet: 0x0488b21e public, 0x0488ADE4 private; testnet: 0x043587cf public, 0x04358394 private)
+        stream.writeBytes(version)
 
         // 1 byte: depth: 0x00 for master nodes, 0x01 for level-1 derived keys, ....
         stream.write(depth)
@@ -76,25 +86,64 @@ fun main() {
         stream.writeBytes(childNumber)
 
         // 32 bytes: the chain code
-        stream.writeBytes(mk.chainCode)
+        stream.writeBytes(chainCode)
 
         // 33 bytes: the public key or private key data (serP(K) for public keys, 0x00 || ser256(k) for private keys)
-        stream.write(0)
-        stream.writeBytes(mk.secretKey)
+        when (val size = encoded.size) {
+            32 -> stream.write(0)
+            33 -> {/*noop*/}
+            else -> error("Key size $size is not supported!")
+        }
+        stream.writeBytes(encoded)
         stream.toByteArray()
     }
-    // This 78 byte structure can be encoded like other Bitcoin data in Base58,
-    // by first adding 32 checksum bits (derived from the double SHA-256 checksum),
-    // and then converting to the Base58 representation.
-    sha256.update(epk)
+}
+
+private fun getKeyHash(encoded: ByteArray): ByteArray {
+    val sha256 = MessageDigest.getInstance("sha256")
+    sha256.update(encoded)
     sha256.update(sha256.digest())
-    val hash = sha256.digest()
+    return sha256.digest()
+}
+
+fun main() {
+    val mnemonic = "foo"
+    val passphrase = "bar"
+    val seed = getSeed(mnemonic = mnemonic, passphrase = passphrase)
+    val masterKey = getMasterKey(seed = seed)
+    // Split I into two 32-byte sequences, IL and IR.
+    // Use parse256(IL) as master secret key, and IR as master chain code.
+    val secretKey = masterKey.copyOfRange(fromIndex = 0, toIndex = 32)
+    val chainCode = masterKey.copyOfRange(fromIndex = 32, toIndex = 64)
+    // todo
+    val spec: ECParameterSpec = ECNamedCurveTable.getParameterSpec("secp256k1")
+    val point = spec.g.multiply(BigInteger(1, secretKey))
+    val publicKey = point.getEncoded(true)
+    // Extended public and private keys are serialized as follows:
+    val extendedPrivateKey = getExtendedKey(
+        version = 0x0488ade4,
+        depth = 0,
+        fingerprint = 0,
+        childNumber = 0,
+        chainCode = chainCode,
+        encoded = secretKey,
+    )
+    val extendedPublicKey = getExtendedKey(
+        version = 0x0488b21e,
+        depth = 0,
+        fingerprint = 0,
+        childNumber = 0,
+        chainCode = chainCode,
+        encoded = publicKey,
+    )
     val message = """
-        mk:sk: ${mk.secretKey.hex()}
-        mk:cc: ${mk.chainCode.hex()}
-        epk(${epk.size}): ${epk.hex()}
-        epk:sha256:sha256: ${hash.hex()}
-        epk:checksum: ${hash.copyOf(4).hex()}
+        secret:key: ${secretKey.hex()}
+        chain:code: ${chainCode.hex()}
+        public:key(${publicKey.size}): ${publicKey.hex()}
+        extended:private:key(${extendedPrivateKey.size}): ${extendedPrivateKey.hex()}
+        extended:private:key:checksum: ${getKeyHash(extendedPrivateKey).copyOf(4).hex()}
+        extended:public:key(${extendedPublicKey.size}): ${extendedPublicKey.hex()}
+        extended:public:key:checksum: ${getKeyHash(extendedPublicKey).copyOf(4).hex()}
     """.trimIndent()
     println(message)
 }

@@ -11,4 +11,5 @@ tasks.register<JavaExec>("run") {
 
 dependencies {
     implementation("com.github.kepocnhh:Bytes:0.4.0")
+    implementation("org.bouncycastle:bcpkix-jdk18on:1.82")
 }
