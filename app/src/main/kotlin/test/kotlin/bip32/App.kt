@@ -54,17 +54,7 @@ fun main() {
     val mnemonic = "foo"
     val passphrase = "bar"
     val seed = getSeed(mnemonic = mnemonic, passphrase = passphrase)
-    // Calculate I = HMAC-SHA512(Key = "Bitcoin seed", Data = S)
-    val mac = Mac.getInstance("hmacsha512")
-    val encoded = "Bitcoin seed".toByteArray(charset = Charsets.UTF_8)
-    val key: Key = SecretKeySpec(encoded, mac.algorithm)
-    mac.init(key)
-    val I = mac.doFinal(seed)
-    check(I.size == 64)
-    // Split I into two 32-byte sequences, IL and IR.
-    val IL = I.copyOfRange(fromIndex = 0, toIndex = 32)
-    val IR = I.copyOfRange(fromIndex = 32, toIndex = 64)
-    // Use parse256(IL) as master secret key, and IR as master chain code.
+    val mk = MasterKey.from(seed = seed)
     val pubver = 0x0488b21e
     val prtver = 0x0488ade4
     val depth = 0
@@ -86,14 +76,13 @@ fun main() {
         stream.writeBytes(childNumber)
 
         // 32 bytes: the chain code
-        stream.writeBytes(IR)
+        stream.writeBytes(mk.chainCode)
 
         // 33 bytes: the public key or private key data (serP(K) for public keys, 0x00 || ser256(k) for private keys)
         stream.write(0)
-        stream.writeBytes(IL)
+        stream.writeBytes(mk.secretKey)
         stream.toByteArray()
     }
-
     // This 78 byte structure can be encoded like other Bitcoin data in Base58,
     // by first adding 32 checksum bits (derived from the double SHA-256 checksum),
     // and then converting to the Base58 representation.
@@ -101,9 +90,8 @@ fun main() {
     sha256.update(sha256.digest())
     val hash = sha256.digest()
     val message = """
-        key(${key.encoded.size}): ${key.encoded.hex()}
-        IL: ${IL.hex()}
-        IR: ${IR.hex()}
+        mk:sk: ${mk.secretKey.hex()}
+        mk:cc: ${mk.chainCode.hex()}
         epk(${epk.size}): ${epk.hex()}
         epk:sha256:sha256: ${hash.hex()}
         epk:checksum: ${hash.copyOf(4).hex()}
