@@ -1,6 +1,8 @@
 package test.kotlin.bip32
 
+import java.io.ByteArrayOutputStream
 import java.security.Key
+import java.security.MessageDigest
 import java.security.spec.KeySpec
 import java.text.Normalizer
 import java.util.Locale
@@ -8,6 +10,7 @@ import javax.crypto.Mac
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
+import sp.kx.bytes.writeBytes
 
 private fun Int.hex(locale: Locale = Locale.US): String {
     return String.format(locale, "%02x", and(0xff))
@@ -57,15 +60,50 @@ fun main() {
     val key: Key = SecretKeySpec(encoded, mac.algorithm)
     mac.init(key)
     val I = mac.doFinal(seed)
+    check(I.size == 64)
     // Split I into two 32-byte sequences, IL and IR.
     val IL = I.copyOfRange(fromIndex = 0, toIndex = 32)
     val IR = I.copyOfRange(fromIndex = 32, toIndex = 64)
     // Use parse256(IL) as master secret key, and IR as master chain code.
+    val pubver = 0x0488b21e
+    val prtver = 0x0488ade4
+    val depth = 0
+    val fingerprint = 0
+    val childNumber = 0
+    val sha256 = MessageDigest.getInstance("sha256")
+    val pk = ByteArrayOutputStream().use { stream ->
+        // 4 bytes: version bytes (mainnet: 0x0488B21E public, 0x0488ADE4 private; testnet: 0x043587CF public, 0x04358394 private)
+        stream.writeBytes(prtver)
+
+        // 1 byte: depth: 0x00 for master nodes, 0x01 for level-1 derived keys, ....
+        stream.write(depth)
+
+        // 4 bytes: the fingerprint of the parent's key (0x00000000 if master key)
+        stream.writeBytes(fingerprint)
+
+        // 4 bytes: child number. This is ser32(i) for i in xi = xpar/i, with xi the key being serialized. (0x00000000 if master key)
+        stream.writeBytes(childNumber)
+
+        // 32 bytes: the chain code
+        stream.writeBytes(IR)
+
+        // 33 bytes: the public key or private key data (serP(K) for public keys, 0x00 || ser256(k) for private keys)
+        stream.write(0)
+        stream.writeBytes(IL)
+
+        // This 78 byte structure can be encoded like other Bitcoin data in Base58,
+        // by first adding 32 checksum bits (derived from the double SHA-256 checksum),
+        // and then converting to the Base58 representation.
+        sha256.update(stream.toByteArray())
+        sha256.update(sha256.digest())
+        stream.write(sha256.digest(), 0, 4)
+        stream.toByteArray()
+    }
     val message = """
         key(${key.encoded.size}): ${key.encoded.hex()}
-        I(${I.size}): ${I.hex()}
-        IL(${IL.size}): ${IL.hex()}
-        IR(${IR.size}): ${IR.hex()}
+        IL: ${IL.hex()}
+        IR: ${IR.hex()}
+        pk(${pk.size}): ${pk.hex()}
     """.trimIndent()
     println(message)
 }

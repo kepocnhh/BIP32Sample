@@ -10,5 +10,5 @@ tasks.register<JavaExec>("run") {
 }
 
 dependencies {
-    // todo
+    implementation("com.github.kepocnhh:Bytes:0.4.0")
 }
